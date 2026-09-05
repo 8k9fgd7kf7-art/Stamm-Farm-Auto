@@ -18,6 +18,7 @@ Ein Browser-Script für **Die Stämme**, das die täglichen Farm- und Sammeldate
   - automatisches Fazit
   - vollständige farbige Rangliste mit `[player]`-Tags
 - Kopiert den fertigen BB-Code und öffnet optional den gewünschten Forumslink.
+- Öffnet einen neuen Forumsbeitrag und trägt den automatisch datierten Betreff sowie den vollständigen BB-Code ein.
 - Veröffentlicht niemals selbstständig einen Beitrag.
 
 ## Installation
@@ -41,8 +42,10 @@ Ein Browser-Script für **Die Stämme**, das die täglichen Farm- und Sammeldate
 1. Das Script starten. Bei Bedarf wechselt es automatisch zur Stammes-Mitgliederübersicht.
 2. Optional den Link zum Stammesforum oder gewünschten Thread eintragen.
 3. **Daten lesen & Auswertung erstellen** anklicken.
-4. Nach Abschluss den BB-Code kopieren oder über **Forum öffnen** zum gespeicherten Link wechseln.
+4. Nach Abschluss den BB-Code kopieren oder über **Post fertig öffnen** einen ausgefüllten neuen Beitrag anlegen.
 5. Den Beitrag im Forum kontrollieren und manuell absenden.
+
+Der Betreff wird automatisch im Format `📈Tägliche Auswertung TT.MM.JJJJ` erzeugt.
 
 ## Alten Stand importieren
 
@@ -70,7 +73,7 @@ Die Historie umfasst maximal 120 Tagesstände je Welt und Stamm. Über **Rohdate
 
 ## Version
 
-Aktuell: **1.2.0**
+Aktuell: **1.3.0**
 
 Details stehen in der [`CHANGELOG.md`](CHANGELOG.md).
 
