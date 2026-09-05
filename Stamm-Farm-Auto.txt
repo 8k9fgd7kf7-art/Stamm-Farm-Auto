@@ -2,7 +2,7 @@ javascript:
 
 /*
  * Stämme – automatische Tagesauswertung
- * Version 1.1.0
+ * Version 1.2.0
  *
  * Liest auf der Stammes-Mitgliederübersicht Rang, Punkte, globalen Rang,
  * Dörfer, geplünderte und gesammelte Rohstoffe aus. Speichert Tagesstände
@@ -13,7 +13,7 @@ javascript:
 (async function () {
     'use strict';
 
-    const VERSION = '1.1.0';
+    const VERSION = '1.2.0';
     const APP_ID = 'malte-ds-daily-evaluation';
     const STORAGE_PREFIX = 'malteDsDailyEvaluation:v1:';
     const REQUEST_GAP_MS = 230;
@@ -70,11 +70,24 @@ javascript:
     };
 
     const formatNumber = (value) => Math.round(Number(value) || 0)
-        .toLocaleString('en-US');
+        .toLocaleString('de-DE');
 
     const signedNumber = (value) => {
         const number = Math.round(Number(value) || 0);
         return `${number > 0 ? '+' : ''}${formatNumber(number)}`;
+    };
+
+    const percentChange = (current, previous) => {
+        const oldValue = Number(previous) || 0;
+        const newValue = Number(current) || 0;
+        if (oldValue === 0) return newValue === 0 ? 0 : null;
+        return ((newValue - oldValue) / oldValue) * 100;
+    };
+
+    const formatPercent = (value) => {
+        if (value === null || !Number.isFinite(value)) return 'neu';
+        const number = Math.abs(value) < 0.005 ? 0 : value;
+        return `${number >= 0 ? '+' : ''}${number.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
     };
 
     const bbPlayer = (name) => `[player]${name}[/player]`;
@@ -240,6 +253,10 @@ javascript:
         for (const [field, names] of Object.entries(aliases)) {
             index[field] = headers.findIndex((header) => names.includes(header));
         }
+        const totalColumns = headers
+            .map((header, column) => ({ header, column }))
+            .filter((item) => item.header === 'gesamt' || item.header === 'insgesamt' || item.header.startsWith('gesamt'));
+        if (totalColumns.length) index.total = totalColumns.at(-1).column;
         for (const required of ['name', 'loot', 'gathered']) {
             if (index[required] < 0) throw new Error(`Die Spalte „${required === 'name' ? 'Name/Spieler' : required === 'loot' ? 'Geplündert' : 'Gesammelt'}“ fehlt.`);
         }
@@ -286,11 +303,12 @@ javascript:
     }
 
     function rankColor(position) {
-        if (position === 1) return '#b8860b';
-        if (position === 2) return '#6f7b83';
-        if (position === 3) return '#a65f2e';
-        if (position <= 5) return '#2f8f2f';
-        return '#444444';
+        return position <= 5 ? '#00aa00' : '#4488ff';
+    }
+
+    function shortDate(key) {
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key));
+        return match ? `${match[3]}.${match[2]}` : String(key);
     }
 
     function buildEvaluation(snapshot, previous) {
@@ -298,11 +316,18 @@ javascript:
         const hasPrevious = Boolean(previous);
         const ranked = snapshot.players.map((player) => {
             const old = previousByName.get(player.name);
-            return { ...player, previousTotal: old?.total ?? null, diff: old ? player.total - old.total : null };
+            return {
+                ...player,
+                previousTotal: old?.total ?? null,
+                diff: old ? player.total - old.total : null,
+                percent: old ? percentChange(player.total, old.total) : null
+            };
         }).sort((a, b) => b.total - a.total || b.gathered - a.gathered || a.name.localeCompare(b.name, 'de'));
 
         const comparable = ranked.filter((player) => player.previousTotal !== null);
-        const increases = [...comparable].sort((a, b) => b.diff - a.diff || b.total - a.total).slice(0, 5);
+        const increases = [...comparable]
+            .sort((a, b) => (b.percent ?? Number.POSITIVE_INFINITY) - (a.percent ?? Number.POSITIVE_INFINITY) || b.diff - a.diff || b.total - a.total)
+            .slice(0, 5);
         const top = ranked.slice(0, 5);
         const count = ranked.length || 1;
         const sums = ranked.reduce((acc, player) => ({
@@ -328,7 +353,7 @@ javascript:
         lines.push('[b]Top 5 – höchste Steigerung zum Vergleichsstand[/b]');
         if (increases.length) {
             increases.forEach((player, index) => {
-                lines.push(`${index + 1}. ${bbPlayer(player.name)} – ${bbColor(diffColor(player.diff, true), `[b]${signedNumber(player.diff)}[/b]`)} auf ${formatNumber(player.total)}`);
+                lines.push(`${index + 1}. ${bbPlayer(player.name)} – ${bbColor(diffColor(player.diff, true), `[b]${formatPercent(player.percent)}[/b]`)} (${signedNumber(player.diff)} Rohstoffe)`);
             });
         } else {
             lines.push('[i]Noch nicht verfügbar – die Steigerungen erscheinen ab dem nächsten gespeicherten Tagesstand.[/i]');
@@ -340,9 +365,9 @@ javascript:
         lines.push('[b]Fazit[/b]');
         if (leader && bestIncrease && hasPrevious) {
             if (bestIncrease.name === leader.name) {
-                lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an und erzielt zugleich mit ${bbColor(diffColor(bestIncrease.diff, true), `[b]${signedNumber(bestIncrease.diff)}[/b]`)} die stärkste Veränderung zum Vergleichsstand.`);
+                lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an und erzielt zugleich mit ${bbColor(diffColor(bestIncrease.diff, true), `[b]${formatPercent(bestIncrease.percent)}[/b]`)} die stärkste prozentuale Veränderung zum Vergleichsstand.`);
             } else {
-                lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an. Die stärkste Veränderung erreicht ${bbPlayer(bestIncrease.name)} mit ${bbColor(diffColor(bestIncrease.diff, true), `[b]${signedNumber(bestIncrease.diff)}[/b]`)}.`);
+                lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an. Die stärkste prozentuale Veränderung erreicht ${bbPlayer(bestIncrease.name)} mit ${bbColor(diffColor(bestIncrease.diff, true), `[b]${formatPercent(bestIncrease.percent)}[/b]`)}.`);
             }
         } else if (leader) {
             lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an. Ab dem nächsten Tagesstand ergänzt die Auswertung automatisch die Veränderungen zum Vortag.`);
@@ -350,10 +375,12 @@ javascript:
         lines.push('');
         lines.push('[b]Vollständige Rangliste[/b]');
         lines.push('[table]');
-        lines.push('[**]Platz[||]Spieler[||]Rang[||]Punkte[||]Global[||]Dörfer[||]Geplündert[||]Gesammelt[||]Insgesamt[||]Veränderung[/**]');
+        lines.push(`[**]Rang[||]Spieler[||]Gesamt (${previous ? shortDate(previous.date) : '–'})[||]Gesamt (${shortDate(snapshot.date)})[||]Geplündert[||]Gesammelt[||]Veränderung %[/**]`);
         ranked.forEach((player, index) => {
-            const diffText = player.diff === null ? '–' : signedNumber(player.diff);
-            lines.push(`[*]${bbColor(rankColor(index + 1), `[b]${index + 1}[/b]`)}[|]${bbPlayer(player.name)}[|]${formatNumber(player.rank)}[|]${formatNumber(player.points)}[|]${formatNumber(player.globalRank)}[|]${formatNumber(player.villages)}[|]${formatNumber(player.loot)}[|]${formatNumber(player.gathered)}[|][b]${formatNumber(player.total)}[/b][|]${bbColor(diffColor(player.diff, hasPrevious), diffText)}`);
+            const color = rankColor(index + 1);
+            const oldTotal = player.previousTotal === null ? '–' : formatNumber(player.previousTotal);
+            const change = player.previousTotal === null ? '–' : formatPercent(player.percent);
+            lines.push(`[*]${index + 1}[|][b]${bbColor(color, bbPlayer(player.name))}[/b][|]${oldTotal}[|][b]${bbColor(color, formatNumber(player.total))}[/b][|]${formatNumber(player.loot)}[|]${formatNumber(player.gathered)}[|]${change}`);
         });
         lines.push('[/table]');
         lines.push('');
