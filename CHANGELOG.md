@@ -1,5 +1,14 @@
 # Änderungsverlauf
 
+## 1.2.0 – 05.09.2026
+
+- Ranglistentabelle an das bisherige Forumsformat angepasst.
+- Spalten: Rang, Spieler, Gesamt Vergleichstag, Gesamt aktuell, Geplündert, Gesammelt und Veränderung in Prozent.
+- Plätze 1 bis 5 werden grün, alle weiteren Plätze blau hervorgehoben.
+- Deutsche Tausenderpunkte und Dezimalkommas ergänzt.
+- Top 5 der Steigerungen werden nun prozentual sortiert.
+- Import erkennt datierte Spalten wie `Gesamt (04.09)` und verwendet den jüngsten Gesamtwert.
+
 ## 1.1.0 – 05.09.2026
 
 - Importbereich für ältere BB-Code-Tabellen ergänzt.
