@@ -8,6 +8,7 @@ Ein Browser-Script für **Die Stämme**, das die täglichen Farm- und Sammeldate
 - Ruft für alle Mitglieder die täglichen Werte **Geplündert** und **Gesammelt** ab.
 - Berechnet automatisch den Gesamtwert.
 - Speichert Tagesstände getrennt nach Welt und Stamm im Browser.
+- Importiert ältere Tagesstände aus bisherigen BB-Code-Tabellen.
 - Vergleicht den aktuellen Stand mit dem zuletzt gespeicherten älteren Tagesstand.
 - Erstellt:
   - Top 5 nach Gesamtleistung
@@ -42,6 +43,15 @@ Ein Browser-Script für **Die Stämme**, das die täglichen Farm- und Sammeldate
 4. Nach Abschluss den BB-Code kopieren oder über **Forum öffnen** zum gespeicherten Link wechseln.
 5. Den Beitrag im Forum kontrollieren und manuell absenden.
 
+## Alten Stand importieren
+
+1. **Alten Stand importieren** öffnen.
+2. Das Datum auswählen, an dem die alten Daten erfasst wurden.
+3. Die vollständige alte BB-Code-Tabelle einfügen.
+4. **Stand speichern & neu vergleichen** anklicken.
+
+Unterstützt werden sowohl die bisherigen Tabellen mit den Spalten `Name`, `Rang`, `Punkte`, `Globaler Rang`, `Dörfer`, `Geplündert`, `Gesammelt` und `Insgesamt` als auch Tabellen, die bereits vom neuen Script erzeugt wurden. Wenn der heutige Stand schon eingelesen ist, wird die Auswertung unmittelbar nach dem Import neu berechnet.
+
 Beim ersten gespeicherten Tag ist noch kein Vergleich möglich. Ab dem nächsten Tagesstand verwendet das Script automatisch den zuletzt gespeicherten älteren Stand.
 
 ## Datenspeicherung
@@ -59,7 +69,7 @@ Die Historie umfasst maximal 120 Tagesstände je Welt und Stamm. Über **Rohdate
 
 ## Version
 
-Aktuell: **1.0.0**
+Aktuell: **1.1.0**
 
 Details stehen in der [`CHANGELOG.md`](CHANGELOG.md).
 
