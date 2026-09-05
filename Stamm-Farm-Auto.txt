@@ -2,7 +2,7 @@ javascript:
 
 /*
  * Stämme – automatische Tagesauswertung
- * Version 1.0.0
+ * Version 1.1.0
  *
  * Liest auf der Stammes-Mitgliederübersicht Rang, Punkte, globalen Rang,
  * Dörfer, geplünderte und gesammelte Rohstoffe aus. Speichert Tagesstände
@@ -13,7 +13,7 @@ javascript:
 (async function () {
     'use strict';
 
-    const VERSION = '1.0.0';
+    const VERSION = '1.1.0';
     const APP_ID = 'malte-ds-daily-evaluation';
     const STORAGE_PREFIX = 'malteDsDailyEvaluation:v1:';
     const REQUEST_GAP_MS = 230;
@@ -201,6 +201,83 @@ javascript:
         return keys.length ? store.days[keys.at(-1)] : null;
     }
 
+    function cleanBbText(value) {
+        return String(value ?? '')
+            .replace(/\[\/?(?:b|i|u|s|center|player|size(?:=\d+)?|color(?:=#[0-9a-f]+)?)\]/gi, '')
+            .replace(/\[[^\]]+\]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function normalizeHeader(value) {
+        return cleanBbText(value).toLowerCase()
+            .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+            .replace(/[^a-z0-9]/g, '');
+    }
+
+    function parseImportedTable(text, date) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Bitte wähle ein gültiges Datum aus.');
+        if (date >= today) throw new Error('Der importierte Stand muss vor dem heutigen Datum liegen.');
+
+        const source = String(text || '').replace(/\r/g, '').trim();
+        const tableMatch = source.match(/\[table\]([\s\S]*?)\[\/table\]/i);
+        const table = tableMatch ? tableMatch[1] : source;
+        const headerMatch = table.match(/\[\*\*\]([\s\S]*?)\[\/\*\*\]/i);
+        if (!headerMatch) throw new Error('Keine BB-Code-Tabellenüberschrift gefunden.');
+
+        const headers = headerMatch[1].split('[||]').map(normalizeHeader);
+        const aliases = {
+            name: ['name', 'spieler', 'mitglied'],
+            rank: ['rang', 'stammesrang'],
+            points: ['punkte'],
+            globalRank: ['globalerrang', 'globalrang', 'global'],
+            villages: ['doerfer', 'dorfer', 'villages'],
+            loot: ['gepluendert', 'geplundert', 'loot'],
+            gathered: ['gesammelt', 'gathered'],
+            total: ['insgesamt', 'gesamt', 'combined']
+        };
+        const index = {};
+        for (const [field, names] of Object.entries(aliases)) {
+            index[field] = headers.findIndex((header) => names.includes(header));
+        }
+        for (const required of ['name', 'loot', 'gathered']) {
+            if (index[required] < 0) throw new Error(`Die Spalte „${required === 'name' ? 'Name/Spieler' : required === 'loot' ? 'Geplündert' : 'Gesammelt'}“ fehlt.`);
+        }
+
+        const rowRegex = /\[\*\](.*?)(?=\n\[\*\]|$)/gs;
+        const players = [];
+        let match;
+        while ((match = rowRegex.exec(table)) !== null) {
+            const cells = match[1].trim().split('[|]');
+            const get = (field) => index[field] >= 0 ? cleanBbText(cells[index[field]]) : '';
+            const name = get('name');
+            if (!name) continue;
+            const loot = parseNumber(get('loot'));
+            const gathered = parseNumber(get('gathered'));
+            players.push({
+                name,
+                rank: parseNumber(get('rank')),
+                points: parseNumber(get('points')),
+                globalRank: parseNumber(get('globalRank')),
+                villages: parseNumber(get('villages')),
+                loot,
+                gathered,
+                total: index.total >= 0 ? parseNumber(get('total')) : loot + gathered,
+                sourceIndex: players.length
+            });
+        }
+        if (!players.length) throw new Error('Es konnten keine Spielerzeilen aus der Tabelle gelesen werden.');
+        return {
+            version: 1,
+            date,
+            capturedAt: new Date().toISOString(),
+            imported: true,
+            world: worldId,
+            tribe: tribeId,
+            players
+        };
+    }
+
     function diffColor(diff, hasPrevious) {
         if (!hasPrevious) return '#777777';
         if (diff > 0) return '#2f8f2f';
@@ -325,10 +402,14 @@ javascript:
             #${APP_ID} .ds-body{padding:12px}
             #${APP_ID} .ds-grid{display:grid;grid-template-columns:minmax(180px,1fr) minmax(260px,2fr);gap:8px 12px;align-items:center}
             #${APP_ID} label{font-weight:bold}
-            #${APP_ID} input[type=url]{width:100%;min-height:34px;padding:5px 7px;border:1px solid #8c7b63;background:#fff}
+            #${APP_ID} input[type=url],#${APP_ID} input[type=date]{width:100%;min-height:34px;padding:5px 7px;border:1px solid #8c7b63;background:#fff}
             #${APP_ID} .ds-buttons{display:flex;flex-wrap:wrap;gap:7px;margin:11px 0}
             #${APP_ID} button{min-height:35px;padding:6px 12px;cursor:pointer}
             #${APP_ID} textarea{width:100%;min-height:360px;resize:vertical;padding:9px;background:#fff;border:1px solid #8c7b63;font:12px/1.4 Consolas,monospace}
+            #${APP_ID} .ds-import{display:none;margin:10px 0;padding:10px;background:#ead7aa;border:1px solid #ad8b53}
+            #${APP_ID} .ds-import.open{display:block}
+            #${APP_ID} .ds-import textarea{min-height:170px;margin-top:8px}
+            #${APP_ID} .ds-import-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
             #${APP_ID} .ds-status{padding:8px 10px;background:#fff8e8;border:1px solid #c7ad7e;min-height:36px}
             #${APP_ID} .ds-progress{height:12px;background:#d5c29d;margin-top:7px;overflow:hidden;border-radius:2px}
             #${APP_ID} .ds-progress span{display:block;width:0;height:100%;background:#4f8a3d;transition:width .2s}
@@ -346,6 +427,18 @@ javascript:
                 <button type="button" class="btn" id="${APP_ID}-copy" disabled>BB-Code kopieren</button>
                 <button type="button" class="btn" id="${APP_ID}-forum-open" disabled>Forum öffnen</button>
                 <button type="button" class="btn" id="${APP_ID}-export" disabled>Rohdaten sichern</button>
+                <button type="button" class="btn" id="${APP_ID}-import-toggle">Alten Stand importieren</button>
+            </div>
+            <div class="ds-import" id="${APP_ID}-import-box">
+                <div class="ds-grid">
+                    <label for="${APP_ID}-import-date">Datum des alten Stands</label>
+                    <input id="${APP_ID}-import-date" type="date" max="${today}">
+                </div>
+                <textarea id="${APP_ID}-import-text" placeholder="Hier die alte BB-Code-Tabelle einfügen – zum Beispiel mit Name, Rang, Punkte, Globaler Rang, Dörfer, Geplündert, Gesammelt und Insgesamt …"></textarea>
+                <div class="ds-import-actions">
+                    <button type="button" class="btn" id="${APP_ID}-import-save">Stand speichern & neu vergleichen</button>
+                    <button type="button" class="btn" id="${APP_ID}-import-cancel">Abbrechen</button>
+                </div>
             </div>
             <div class="ds-status" id="${APP_ID}-status">${existingToday ? `Für heute (${displayDate(today)}) ist bereits ein Stand gespeichert. Du kannst ihn neu einlesen und ersetzen.` : `Bereit für die Auswertung vom ${displayDate(today)}.`}${initialPrevious ? ` Vergleich: ${displayDate(initialPrevious.date)}.` : ' Noch kein älterer Vergleichsstand vorhanden.'}</div>
             <div class="ds-progress"><span id="${APP_ID}-bar"></span></div>
@@ -360,6 +453,12 @@ javascript:
     const copyButton = panel.querySelector(`#${APP_ID}-copy`);
     const forumButton = panel.querySelector(`#${APP_ID}-forum-open`);
     const exportButton = panel.querySelector(`#${APP_ID}-export`);
+    const importToggle = panel.querySelector(`#${APP_ID}-import-toggle`);
+    const importBox = panel.querySelector(`#${APP_ID}-import-box`);
+    const importDate = panel.querySelector(`#${APP_ID}-import-date`);
+    const importText = panel.querySelector(`#${APP_ID}-import-text`);
+    const importSave = panel.querySelector(`#${APP_ID}-import-save`);
+    const importCancel = panel.querySelector(`#${APP_ID}-import-cancel`);
     const forumInput = panel.querySelector(`#${APP_ID}-forum`);
     const output = panel.querySelector(`#${APP_ID}-output`);
     const status = panel.querySelector(`#${APP_ID}-status`);
@@ -392,6 +491,43 @@ javascript:
         currentStore.forumUrl = forumInput.value.trim();
         writeStore(currentStore);
         forumButton.disabled = !output.value || !forumInput.value.trim();
+    });
+
+    importToggle.addEventListener('click', (event) => {
+        event.preventDefault();
+        importBox.classList.toggle('open');
+        if (importBox.classList.contains('open')) {
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            if (!importDate.value) importDate.value = localDateKey(yesterday);
+            importText.focus();
+        }
+    });
+
+    importCancel.addEventListener('click', (event) => {
+        event.preventDefault();
+        importBox.classList.remove('open');
+    });
+
+    importSave.addEventListener('click', (event) => {
+        event.preventDefault();
+        try {
+            const snapshot = parseImportedTable(importText.value, importDate.value);
+            const currentStore = readStore();
+            const alreadyExists = Boolean(currentStore.days[snapshot.date]);
+            if (alreadyExists && !window.confirm(`Für den ${displayDate(snapshot.date)} ist bereits ein Stand gespeichert. Soll er ersetzt werden?`)) return;
+            currentStore.days[snapshot.date] = snapshot;
+            writeStore(currentStore);
+            importBox.classList.remove('open');
+            importText.value = '';
+            if (currentSnapshot) {
+                showSnapshot(currentSnapshot);
+            } else {
+                setStatus(`Alter Stand vom ${displayDate(snapshot.date)} mit ${snapshot.players.length} Spielern gespeichert. Lies jetzt die aktuellen Daten ein.`, 'success');
+            }
+        } catch (error) {
+            setStatus(`Import fehlgeschlagen: ${error.message || error}`, 'error');
+        }
     });
 
     runButton.addEventListener('click', async (event) => {
