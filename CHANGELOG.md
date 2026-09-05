@@ -1,5 +1,13 @@
 # Änderungsverlauf
 
+## 1.1.0 – 05.09.2026
+
+- Importbereich für ältere BB-Code-Tabellen ergänzt.
+- Frei wählbares Datum für importierte Vergleichsstände.
+- Erkennung der bisherigen Tabellen und der vom Script erzeugten Ranglisten.
+- Sofortige Neuberechnung eines bereits eingelesenen heutigen Stands.
+- Schutz vor versehentlichem Überschreiben vorhandener Tagesstände.
+
 ## 1.0.0 – 05.09.2026
 
 - Erste veröffentlichte Version.
