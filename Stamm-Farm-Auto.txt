@@ -1,0 +1,463 @@
+javascript:
+
+/*
+ * Stämme – automatische Tagesauswertung
+ * Version 1.0.0
+ *
+ * Liest auf der Stammes-Mitgliederübersicht Rang, Punkte, globalen Rang,
+ * Dörfer, geplünderte und gesammelte Rohstoffe aus. Speichert Tagesstände
+ * lokal und erzeugt daraus einen vollständigen Forumsbeitrag in BB-Code.
+ *
+ * Das Script veröffentlicht niemals selbstständig einen Beitrag.
+ */
+(async function () {
+    'use strict';
+
+    const VERSION = '1.0.0';
+    const APP_ID = 'malte-ds-daily-evaluation';
+    const STORAGE_PREFIX = 'malteDsDailyEvaluation:v1:';
+    const REQUEST_GAP_MS = 230;
+    const MAX_HISTORY_DAYS = 120;
+
+    if (document.getElementById(APP_ID)) {
+        document.getElementById(APP_ID).scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+    }
+
+    const gd = window.game_data || {};
+    const screen = String(gd.screen || new URL(location.href).searchParams.get('screen') || '');
+    const mode = String(gd.mode || new URL(location.href).searchParams.get('mode') || '');
+
+    if (screen !== 'ally' || mode !== 'members') {
+        const target = typeof gd.link_base_pure === 'string'
+            ? gd.link_base_pure + 'ally&mode=members'
+            : '/game.php?screen=ally&mode=members';
+        if (window.UI && typeof UI.InfoMessage === 'function') {
+            UI.InfoMessage('Die Tagesauswertung wird auf der Mitgliederübersicht gestartet.', 2500);
+        }
+        location.assign(target);
+        return;
+    }
+
+    const esc = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const localDateKey = (date = new Date()) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    };
+
+    const displayDate = (key) => {
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key));
+        return match ? `${match[3]}.${match[2]}.${match[1]}` : String(key);
+    };
+
+    const parseNumber = (value) => {
+        let text = String(value ?? '').trim().replace(/\s|\u00a0/g, '');
+        if (!text || text === '-' || /^never$/i.test(text)) return 0;
+        const million = /([\d.,]+)\s*(?:mio\.?|mil\.?|million)/i.exec(text);
+        if (million) {
+            const normalized = million[1].replace(/\./g, '').replace(',', '.');
+            return Math.round((Number.parseFloat(normalized) || 0) * 1000000);
+        }
+        text = text.replace(/[^\d-]/g, '');
+        return Number.parseInt(text, 10) || 0;
+    };
+
+    const formatNumber = (value) => Math.round(Number(value) || 0)
+        .toLocaleString('en-US');
+
+    const signedNumber = (value) => {
+        const number = Math.round(Number(value) || 0);
+        return `${number > 0 ? '+' : ''}${formatNumber(number)}`;
+    };
+
+    const bbPlayer = (name) => `[player]${name}[/player]`;
+    const bbColor = (color, text) => `[color=${color}]${text}[/color]`;
+
+    const worldId = String(gd.world || location.host.split('.')[0] || 'world');
+    const tribeId = String(gd.ally?.id || gd.player?.ally || 'tribe');
+    const storageKey = `${STORAGE_PREFIX}${worldId}:${tribeId}`;
+
+    function readStore() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
+            return parsed && typeof parsed === 'object' && parsed.days && typeof parsed.days === 'object'
+                ? parsed
+                : { version: 1, days: {}, forumUrl: '' };
+        } catch (error) {
+            console.warn('[Tagesauswertung] Beschädigter Speicherstand wurde ignoriert.', error);
+            return { version: 1, days: {}, forumUrl: '' };
+        }
+    }
+
+    function writeStore(store) {
+        const keys = Object.keys(store.days || {}).sort();
+        while (keys.length > MAX_HISTORY_DAYS) delete store.days[keys.shift()];
+        localStorage.setItem(storageKey, JSON.stringify(store));
+    }
+
+    function findMemberTable() {
+        const tables = Array.from(document.querySelectorAll('#content_value table.vis, #contentContainer table.vis'));
+        const candidates = tables.map((table) => {
+            const playerLinks = table.querySelectorAll('a[href*="screen=info_player"], a[href*="info_player"]');
+            const header = (table.rows[0]?.innerText || '').toLowerCase();
+            let score = playerLinks.length * 10;
+            if (/mitglied|spieler|name/.test(header)) score += 5;
+            if (/punkte|dörfer|doerfer/.test(table.innerText.toLowerCase())) score += 3;
+            return { table, score, players: playerLinks.length };
+        }).filter((item) => item.players > 0).sort((a, b) => b.score - a.score);
+        return candidates[0]?.table || null;
+    }
+
+    function getHeaderMap(table) {
+        const headerRows = Array.from(table.rows).filter((row) => row.querySelector('th'));
+        const header = headerRows.at(-1);
+        const map = {};
+        if (!header) return map;
+        Array.from(header.cells).forEach((cell, index) => {
+            const text = cell.innerText.trim().toLowerCase();
+            if (/^rang$|^platz$/.test(text)) map.rank = index;
+            else if (/punkte/.test(text)) map.points = index;
+            else if (/global/.test(text)) map.globalRank = index;
+            else if (/dörfer|doerfer|villages/.test(text)) map.villages = index;
+            else if (/name|spieler|mitglied/.test(text)) map.name = index;
+        });
+        return map;
+    }
+
+    function readMembers() {
+        const table = findMemberTable();
+        if (!table) throw new Error('Die Mitgliedertabelle wurde nicht gefunden.');
+        const map = getHeaderMap(table);
+        const members = [];
+        for (const row of Array.from(table.rows)) {
+            const link = row.querySelector('a[href*="screen=info_player"], a[href*="info_player"]');
+            if (!link || !row.cells.length) continue;
+            const cells = Array.from(row.cells).map((cell) => cell.innerText.trim());
+            const nameIndex = Number.isInteger(map.name) ? map.name : Math.max(0, Array.from(row.cells).indexOf(link.closest('td')));
+            const name = link.innerText.trim();
+            if (!name) continue;
+            members.push({
+                name,
+                rank: parseNumber(cells[map.rank ?? 1]),
+                points: parseNumber(cells[map.points ?? 2]),
+                globalRank: parseNumber(cells[map.globalRank ?? 3]),
+                villages: parseNumber(cells[map.villages ?? 4]),
+                sourceIndex: members.length,
+                nameIndex
+            });
+        }
+        if (!members.length) throw new Error('In der Mitgliedertabelle wurden keine Spieler gefunden.');
+        return members;
+    }
+
+    function extractDailyValue(html) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const litItems = Array.from(doc.querySelectorAll('.lit-item'));
+        if (litItems[3]) return parseNumber(litItems[3].textContent);
+
+        const rows = Array.from(doc.querySelectorAll('table.vis tr'));
+        for (const row of rows) {
+            const cells = Array.from(row.cells || []);
+            if (cells.length < 2 || !row.querySelector('a[href*="info_player"]')) continue;
+            const numeric = cells.map((cell) => parseNumber(cell.textContent)).filter((number) => number > 0);
+            if (numeric.length) return numeric.at(-1);
+        }
+        return 0;
+    }
+
+    async function fetchText(url) {
+        const response = await fetch(url, { credentials: 'same-origin' });
+        if (!response.ok) throw new Error(`Abruf fehlgeschlagen (${response.status}).`);
+        return response.text();
+    }
+
+    async function collectDailyData(members, onProgress) {
+        const result = [];
+        for (let index = 0; index < members.length; index += 1) {
+            const member = members[index];
+            const encoded = encodeURIComponent(member.name);
+            onProgress(index, members.length, `Lese ${member.name} …`);
+            const lootUrl = `/game.php?screen=ranking&mode=in_a_day&type=loot_res&name=${encoded}`;
+            const gatherUrl = `/game.php?screen=ranking&mode=in_a_day&type=scavenge&name=${encoded}`;
+            const loot = extractDailyValue(await fetchText(lootUrl));
+            await sleep(REQUEST_GAP_MS);
+            const gathered = extractDailyValue(await fetchText(gatherUrl));
+            result.push({ ...member, loot, gathered, total: loot + gathered });
+            onProgress(index + 1, members.length, `${index + 1} von ${members.length} Spielern gelesen`);
+            if (index < members.length - 1) await sleep(REQUEST_GAP_MS);
+        }
+        return result;
+    }
+
+    function previousDay(store, currentKey) {
+        const keys = Object.keys(store.days || {}).filter((key) => key < currentKey).sort();
+        return keys.length ? store.days[keys.at(-1)] : null;
+    }
+
+    function diffColor(diff, hasPrevious) {
+        if (!hasPrevious) return '#777777';
+        if (diff > 0) return '#2f8f2f';
+        if (diff < 0) return '#c0392b';
+        return '#777777';
+    }
+
+    function rankColor(position) {
+        if (position === 1) return '#b8860b';
+        if (position === 2) return '#6f7b83';
+        if (position === 3) return '#a65f2e';
+        if (position <= 5) return '#2f8f2f';
+        return '#444444';
+    }
+
+    function buildEvaluation(snapshot, previous) {
+        const previousByName = new Map((previous?.players || []).map((player) => [player.name, player]));
+        const hasPrevious = Boolean(previous);
+        const ranked = snapshot.players.map((player) => {
+            const old = previousByName.get(player.name);
+            return { ...player, previousTotal: old?.total ?? null, diff: old ? player.total - old.total : null };
+        }).sort((a, b) => b.total - a.total || b.gathered - a.gathered || a.name.localeCompare(b.name, 'de'));
+
+        const comparable = ranked.filter((player) => player.previousTotal !== null);
+        const increases = [...comparable].sort((a, b) => b.diff - a.diff || b.total - a.total).slice(0, 5);
+        const top = ranked.slice(0, 5);
+        const count = ranked.length || 1;
+        const sums = ranked.reduce((acc, player) => ({
+            loot: acc.loot + player.loot,
+            gathered: acc.gathered + player.gathered,
+            total: acc.total + player.total
+        }), { loot: 0, gathered: 0, total: 0 });
+        const leader = ranked[0];
+        const bestIncrease = increases[0];
+        const date = displayDate(snapshot.date);
+        const previousDate = previous ? displayDate(previous.date) : '';
+
+        const lines = [];
+        lines.push('[center][size=14][b]Tägliche Rohstoffauswertung – ' + date + '[/b][/size][/center]');
+        lines.push('');
+        lines.push(`Heute wurden die Farm- und Sammeldaten von [b]${ranked.length} Spielern[/b] ausgewertet.${hasPrevious ? ` Als Vergleich dient der Stand vom [b]${previousDate}[/b].` : ' Für diesen Stamm ist noch kein älterer Vergleichsstand gespeichert.'}`);
+        lines.push('');
+        lines.push('[b]Top 5 – Gesamtleistung[/b]');
+        top.forEach((player, index) => {
+            lines.push(`${index + 1}. ${bbPlayer(player.name)} – [b]${formatNumber(player.total)}[/b] Rohstoffe (${formatNumber(player.loot)} geplündert / ${formatNumber(player.gathered)} gesammelt)`);
+        });
+        lines.push('');
+        lines.push('[b]Top 5 – höchste Steigerung zum Vergleichsstand[/b]');
+        if (increases.length) {
+            increases.forEach((player, index) => {
+                lines.push(`${index + 1}. ${bbPlayer(player.name)} – ${bbColor(diffColor(player.diff, true), `[b]${signedNumber(player.diff)}[/b]`)} auf ${formatNumber(player.total)}`);
+            });
+        } else {
+            lines.push('[i]Noch nicht verfügbar – die Steigerungen erscheinen ab dem nächsten gespeicherten Tagesstand.[/i]');
+        }
+        lines.push('');
+        lines.push('[b]Durchschnitt pro Spieler[/b]');
+        lines.push(`Geplündert: [b]${formatNumber(sums.loot / count)}[/b] | Gesammelt: [b]${formatNumber(sums.gathered / count)}[/b] | Insgesamt: [b]${formatNumber(sums.total / count)}[/b]`);
+        lines.push('');
+        lines.push('[b]Fazit[/b]');
+        if (leader && bestIncrease && hasPrevious) {
+            if (bestIncrease.name === leader.name) {
+                lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an und erzielt zugleich mit ${bbColor(diffColor(bestIncrease.diff, true), `[b]${signedNumber(bestIncrease.diff)}[/b]`)} die stärkste Veränderung zum Vergleichsstand.`);
+            } else {
+                lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an. Die stärkste Veränderung erreicht ${bbPlayer(bestIncrease.name)} mit ${bbColor(diffColor(bestIncrease.diff, true), `[b]${signedNumber(bestIncrease.diff)}[/b]`)}.`);
+            }
+        } else if (leader) {
+            lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an. Ab dem nächsten Tagesstand ergänzt die Auswertung automatisch die Veränderungen zum Vortag.`);
+        }
+        lines.push('');
+        lines.push('[b]Vollständige Rangliste[/b]');
+        lines.push('[table]');
+        lines.push('[**]Platz[||]Spieler[||]Rang[||]Punkte[||]Global[||]Dörfer[||]Geplündert[||]Gesammelt[||]Insgesamt[||]Veränderung[/**]');
+        ranked.forEach((player, index) => {
+            const diffText = player.diff === null ? '–' : signedNumber(player.diff);
+            lines.push(`[*]${bbColor(rankColor(index + 1), `[b]${index + 1}[/b]`)}[|]${bbPlayer(player.name)}[|]${formatNumber(player.rank)}[|]${formatNumber(player.points)}[|]${formatNumber(player.globalRank)}[|]${formatNumber(player.villages)}[|]${formatNumber(player.loot)}[|]${formatNumber(player.gathered)}[|][b]${formatNumber(player.total)}[/b][|]${bbColor(diffColor(player.diff, hasPrevious), diffText)}`);
+        });
+        lines.push('[/table]');
+        lines.push('');
+        lines.push(`[size=8]Auswertung: ${date}${hasPrevious ? ` | Vergleichsstand: ${previousDate}` : ' | Noch kein Vergleichsstand vorhanden'}[/size]`);
+
+        return { bbcode: lines.join('\n'), ranked, comparableCount: comparable.length };
+    }
+
+    function downloadText(filename, text) {
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    async function copyText(text) {
+        if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+        const helper = document.createElement('textarea');
+        helper.value = text;
+        helper.style.position = 'fixed';
+        helper.style.opacity = '0';
+        document.body.appendChild(helper);
+        helper.select();
+        document.execCommand('copy');
+        helper.remove();
+    }
+
+    const store = readStore();
+    const today = localDateKey();
+    const existingToday = store.days[today] || null;
+    const initialPrevious = previousDay(store, today);
+
+    const panel = document.createElement('div');
+    panel.id = APP_ID;
+    panel.className = 'vis';
+    panel.innerHTML = `
+        <style>
+            #${APP_ID}{margin:0 0 14px;border:1px solid #7d510f;background:#f4e4bc;color:#2d2418;box-sizing:border-box;max-width:1100px}
+            #${APP_ID} *{box-sizing:border-box}
+            #${APP_ID} .ds-head{padding:9px 12px;background:linear-gradient(#a77b43,#80551d);color:#fff;font-weight:bold;font-size:14px;display:flex;justify-content:space-between;gap:10px}
+            #${APP_ID} .ds-body{padding:12px}
+            #${APP_ID} .ds-grid{display:grid;grid-template-columns:minmax(180px,1fr) minmax(260px,2fr);gap:8px 12px;align-items:center}
+            #${APP_ID} label{font-weight:bold}
+            #${APP_ID} input[type=url]{width:100%;min-height:34px;padding:5px 7px;border:1px solid #8c7b63;background:#fff}
+            #${APP_ID} .ds-buttons{display:flex;flex-wrap:wrap;gap:7px;margin:11px 0}
+            #${APP_ID} button{min-height:35px;padding:6px 12px;cursor:pointer}
+            #${APP_ID} textarea{width:100%;min-height:360px;resize:vertical;padding:9px;background:#fff;border:1px solid #8c7b63;font:12px/1.4 Consolas,monospace}
+            #${APP_ID} .ds-status{padding:8px 10px;background:#fff8e8;border:1px solid #c7ad7e;min-height:36px}
+            #${APP_ID} .ds-progress{height:12px;background:#d5c29d;margin-top:7px;overflow:hidden;border-radius:2px}
+            #${APP_ID} .ds-progress span{display:block;width:0;height:100%;background:#4f8a3d;transition:width .2s}
+            #${APP_ID} .ds-note{font-size:11px;color:#5d4b34;margin-top:7px}
+            @media(max-width:650px){#${APP_ID} .ds-grid{grid-template-columns:1fr}#${APP_ID} .ds-buttons button{flex:1 1 145px}#${APP_ID} textarea{min-height:300px}}
+        </style>
+        <div class="ds-head"><span>📊 Tägliche Farmauswertung</span><span>v${VERSION}</span></div>
+        <div class="ds-body">
+            <div class="ds-grid">
+                <label for="${APP_ID}-forum">Forums-/Thread-URL</label>
+                <input id="${APP_ID}-forum" type="url" placeholder="Optional: Link zum Stammesforum oder gewünschten Thread" value="${esc(store.forumUrl || '')}">
+            </div>
+            <div class="ds-buttons">
+                <button type="button" class="btn" id="${APP_ID}-run">Daten lesen & Auswertung erstellen</button>
+                <button type="button" class="btn" id="${APP_ID}-copy" disabled>BB-Code kopieren</button>
+                <button type="button" class="btn" id="${APP_ID}-forum-open" disabled>Forum öffnen</button>
+                <button type="button" class="btn" id="${APP_ID}-export" disabled>Rohdaten sichern</button>
+            </div>
+            <div class="ds-status" id="${APP_ID}-status">${existingToday ? `Für heute (${displayDate(today)}) ist bereits ein Stand gespeichert. Du kannst ihn neu einlesen und ersetzen.` : `Bereit für die Auswertung vom ${displayDate(today)}.`}${initialPrevious ? ` Vergleich: ${displayDate(initialPrevious.date)}.` : ' Noch kein älterer Vergleichsstand vorhanden.'}</div>
+            <div class="ds-progress"><span id="${APP_ID}-bar"></span></div>
+            <p class="ds-note">Der Forumsbeitrag wird nur vorbereitet. Das Script sendet oder veröffentlicht nichts automatisch.</p>
+            <textarea id="${APP_ID}-output" readonly placeholder="Hier erscheint nach dem Einlesen der vollständige BB-Code …"></textarea>
+        </div>`;
+
+    const content = document.querySelector('#content_value') || document.querySelector('#contentContainer') || document.body;
+    content.insertBefore(panel, content.firstChild);
+
+    const runButton = panel.querySelector(`#${APP_ID}-run`);
+    const copyButton = panel.querySelector(`#${APP_ID}-copy`);
+    const forumButton = panel.querySelector(`#${APP_ID}-forum-open`);
+    const exportButton = panel.querySelector(`#${APP_ID}-export`);
+    const forumInput = panel.querySelector(`#${APP_ID}-forum`);
+    const output = panel.querySelector(`#${APP_ID}-output`);
+    const status = panel.querySelector(`#${APP_ID}-status`);
+    const bar = panel.querySelector(`#${APP_ID}-bar`);
+    let currentSnapshot = existingToday;
+
+    function setStatus(message, type = 'info') {
+        status.textContent = message;
+        status.style.borderColor = type === 'error' ? '#b4362d' : type === 'success' ? '#4f8a3d' : '#c7ad7e';
+        status.style.background = type === 'error' ? '#fde4e1' : type === 'success' ? '#e6f3df' : '#fff8e8';
+    }
+
+    function showSnapshot(snapshot) {
+        const currentStore = readStore();
+        const previous = previousDay(currentStore, snapshot.date);
+        const evaluation = buildEvaluation(snapshot, previous);
+        output.value = evaluation.bbcode;
+        copyButton.disabled = false;
+        exportButton.disabled = false;
+        forumButton.disabled = !forumInput.value.trim();
+        currentSnapshot = snapshot;
+        const comparison = previous ? `Verglichen mit ${displayDate(previous.date)} (${evaluation.comparableCount} zugeordnete Spieler).` : 'Der erste Stand wurde gespeichert; der Vortagsvergleich folgt beim nächsten Tagesstand.';
+        setStatus(`Auswertung für ${displayDate(snapshot.date)} fertig. ${comparison}`, 'success');
+    }
+
+    if (existingToday) showSnapshot(existingToday);
+
+    forumInput.addEventListener('input', () => {
+        const currentStore = readStore();
+        currentStore.forumUrl = forumInput.value.trim();
+        writeStore(currentStore);
+        forumButton.disabled = !output.value || !forumInput.value.trim();
+    });
+
+    runButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        runButton.disabled = true;
+        copyButton.disabled = true;
+        forumButton.disabled = true;
+        exportButton.disabled = true;
+        bar.style.width = '0%';
+        try {
+            const members = readMembers();
+            setStatus(`${members.length} Spieler gefunden. Die Farmdaten werden jetzt gelesen …`);
+            const players = await collectDailyData(members, (done, total, message) => {
+                bar.style.width = `${total ? (done / total) * 100 : 0}%`;
+                setStatus(message);
+            });
+            const snapshot = {
+                version: 1,
+                date: today,
+                capturedAt: new Date().toISOString(),
+                world: worldId,
+                tribe: tribeId,
+                players
+            };
+            const currentStore = readStore();
+            currentStore.forumUrl = forumInput.value.trim();
+            currentStore.days[today] = snapshot;
+            writeStore(currentStore);
+            bar.style.width = '100%';
+            showSnapshot(snapshot);
+        } catch (error) {
+            console.error('[Tagesauswertung]', error);
+            setStatus(`Fehler: ${error.message || error}`, 'error');
+        } finally {
+            runButton.disabled = false;
+        }
+    });
+
+    copyButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        try {
+            await copyText(output.value);
+            setStatus('Der vollständige BB-Code wurde kopiert.', 'success');
+        } catch (error) {
+            setStatus('Kopieren war nicht möglich. Markiere den Text bitte manuell.', 'error');
+        }
+    });
+
+    forumButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        const url = forumInput.value.trim();
+        if (!url || !output.value) return;
+        try {
+            const parsed = new URL(url, location.href);
+            if (parsed.origin !== location.origin) throw new Error('Die URL gehört nicht zu dieser Spielwelt.');
+            await copyText(output.value);
+            setStatus('BB-Code kopiert – das Forum wird geöffnet. Dort nur noch in den Editor einfügen und kontrollieren.', 'success');
+            window.open(parsed.href, '_blank', 'noopener');
+        } catch (error) {
+            setStatus(`Forum konnte nicht geöffnet werden: ${error.message || error}`, 'error');
+        }
+    });
+
+    exportButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        if (!currentSnapshot) return;
+        downloadText(`farmdaten_${worldId}_${currentSnapshot.date}.json`, JSON.stringify(currentSnapshot, null, 2));
+    });
+})();
