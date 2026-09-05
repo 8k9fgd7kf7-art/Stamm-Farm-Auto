@@ -2,7 +2,7 @@ javascript:
 
 /*
  * Stämme – automatische Tagesauswertung
- * Version 1.2.0
+ * Version 1.3.0
  *
  * Liest auf der Stammes-Mitgliederübersicht Rang, Punkte, globalen Rang,
  * Dörfer, geplünderte und gesammelte Rohstoffe aus. Speichert Tagesstände
@@ -13,7 +13,7 @@ javascript:
 (async function () {
     'use strict';
 
-    const VERSION = '1.2.0';
+    const VERSION = '1.3.0';
     const APP_ID = 'malte-ds-daily-evaluation';
     const STORAGE_PREFIX = 'malteDsDailyEvaluation:v1:';
     const REQUEST_GAP_MS = 230;
@@ -311,6 +311,43 @@ javascript:
         return match ? `${match[3]}.${match[2]}` : String(key);
     }
 
+    function forumTitle(dateKey) {
+        return `📈Tägliche Auswertung ${displayDate(dateKey)}`;
+    }
+
+    function crossedMilestone(player) {
+        if (player.previousTotal === null || player.diff <= 0) return null;
+        const step = player.total >= 1000000 ? 100000 : 50000;
+        const oldLevel = Math.floor(player.previousTotal / step);
+        const newLevel = Math.floor(player.total / step);
+        return newLevel > oldLevel ? newLevel * step : null;
+    }
+
+    function topComment(player, index, ranked, hasPrevious) {
+        if (!hasPrevious || player.previousTotal === null) {
+            return index === 0
+                ? `Damit setzt sich ${bbPlayer(player.name)} direkt an die Spitze der ersten gespeicherten Auswertung. 👑`
+                : `Damit sichert sich ${bbPlayer(player.name)} heute Platz ${index + 1} der Gesamtwertung. 💪`;
+        }
+        if (player.diff === 0) {
+            return index === 0
+                ? `Heute unverändert – die Führung bleibt mit ${formatNumber(player.total)} Rohstoffen trotzdem bestehen. 👑`
+                : `Bleibt heute unverändert und hält damit weiterhin Platz ${index + 1}.`;
+        }
+        if (player.diff < 0) {
+            return `Liegt heute ${formatNumber(Math.abs(player.diff))} Rohstoffe unter dem Vergleichsstand, behauptet aber weiterhin Platz ${index + 1}.`;
+        }
+        const milestone = crossedMilestone(player);
+        const gap = index === 0 && ranked[1] ? player.total - ranked[1].total : null;
+        let text = `${formatNumber(player.diff)} zusätzliche Rohstoffe bedeuten ${formatPercent(player.percent)}. `;
+        if (milestone) text += `Damit fällt gleichzeitig die Marke von ${formatNumber(milestone)} Rohstoffen! 🔥`;
+        else if (index === 0 && gap !== null) text += `Der Vorsprung auf Platz 2 liegt damit bei ${formatNumber(gap)} Rohstoffen. 👑`;
+        else if (player.percent >= 20) text += 'Ein richtig starker Sprung! 🚀';
+        else if (player.percent >= 5) text += 'Das ist ein richtig starker Tag! 💪';
+        else text += 'Damit geht es weiter in die richtige Richtung.';
+        return text;
+    }
+
     function buildEvaluation(snapshot, previous) {
         const previousByName = new Map((previous?.players || []).map((player) => [player.name, player]));
         const hasPrevious = Boolean(previous);
@@ -325,7 +362,7 @@ javascript:
         }).sort((a, b) => b.total - a.total || b.gathered - a.gathered || a.name.localeCompare(b.name, 'de'));
 
         const comparable = ranked.filter((player) => player.previousTotal !== null);
-        const increases = [...comparable]
+        const increases = comparable.filter((player) => player.diff > 0)
             .sort((a, b) => (b.percent ?? Number.POSITIVE_INFINITY) - (a.percent ?? Number.POSITIVE_INFINITY) || b.diff - a.diff || b.total - a.total)
             .slice(0, 5);
         const top = ranked.slice(0, 5);
@@ -337,43 +374,78 @@ javascript:
         }), { loot: 0, gathered: 0, total: 0 });
         const leader = ranked[0];
         const bestIncrease = increases[0];
+        const bestAbsolute = comparable.filter((player) => player.diff > 0).sort((a, b) => b.diff - a.diff)[0];
         const date = displayDate(snapshot.date);
         const previousDate = previous ? displayDate(previous.date) : '';
+        const previousAverage = previous?.players?.length
+            ? previous.players.reduce((sum, player) => sum + player.total, 0) / previous.players.length
+            : null;
+        const currentAverage = sums.total / count;
+        const medals = ['🥇', '🥈', '🥉', '🏅', '🏅'];
 
         const lines = [];
-        lines.push('[center][size=14][b]Tägliche Rohstoffauswertung – ' + date + '[/b][/size][/center]');
+        lines.push('[i]Hallo Freunde,');
         lines.push('');
-        lines.push(`Heute wurden die Farm- und Sammeldaten von [b]${ranked.length} Spielern[/b] ausgewertet.${hasPrevious ? ` Als Vergleich dient der Stand vom [b]${previousDate}[/b].` : ' Für diesen Stamm ist noch kein älterer Vergleichsstand gespeichert.'}`);
+        lines.push(`die Zahlen für den [b]${shortDate(snapshot.date)}.[/b] sind ausgewertet – und heute schauen wir wieder gemeinsam auf unsere Farm- und Sammelleistung! 😎🔥`);
         lines.push('');
-        lines.push('[b]Top 5 – Gesamtleistung[/b]');
+        if (leader) {
+            const gap = ranked[1] ? leader.total - ranked[1].total : 0;
+            lines.push(`An der Spitze steht ${bbPlayer(leader.name)} mit inzwischen beeindruckenden [b]${formatNumber(leader.total)}[/b] Gesamtrohstoffen.${ranked[1] ? ` Der Vorsprung auf Platz 2 beträgt aktuell ${formatNumber(gap)} Rohstoffe.` : ''} 👑`);
+        }
+        if (hasPrevious && bestIncrease) {
+            lines.push('');
+            lines.push(`Für die größte prozentuale Bewegung sorgt heute ${bbPlayer(bestIncrease.name)} mit [b]${formatPercent(bestIncrease.percent)}[/b].${bestAbsolute && bestAbsolute.name !== bestIncrease.name ? ` Absolut legt ${bbPlayer(bestAbsolute.name)} mit ${signedNumber(bestAbsolute.diff)} Rohstoffen am stärksten nach.` : ''} 🚀`);
+        }
+        lines.push('');
+        lines.push('⸻');
+        lines.push('');
+        lines.push('⚔️ [b]Top 5 Gesamt (Geplündert + Gesammelt)[/b] ⚔️');
+        lines.push('');
         top.forEach((player, index) => {
-            lines.push(`${index + 1}. ${bbPlayer(player.name)} – [b]${formatNumber(player.total)}[/b] Rohstoffe (${formatNumber(player.loot)} geplündert / ${formatNumber(player.gathered)} gesammelt)`);
+            lines.push(`${medals[index]} ${bbPlayer(player.name)}`);
+            lines.push(`Geplündert: [b]${formatNumber(player.loot)}[/b] | Gesammelt: [b]${formatNumber(player.gathered)}[/b]`);
+            lines.push(`Insgesamt: [b]${formatNumber(player.total)}[/b]`);
+            lines.push(topComment(player, index, ranked, hasPrevious));
+            lines.push('');
         });
+        lines.push('⸻');
         lines.push('');
-        lines.push('[b]Top 5 – höchste Steigerung zum Vergleichsstand[/b]');
+        lines.push('🚀 [b]Top 5 höchste Steigerungen[/b] 🚀');
+        lines.push('');
         if (increases.length) {
             increases.forEach((player, index) => {
-                lines.push(`${index + 1}. ${bbPlayer(player.name)} – ${bbColor(diffColor(player.diff, true), `[b]${formatPercent(player.percent)}[/b]`)} (${signedNumber(player.diff)} Rohstoffe)`);
+                lines.push(`${index + 1}. ${bbPlayer(player.name)}`);
+                lines.push(`   Veränderung: [b]${formatPercent(player.percent)}[/b] ${index === 0 ? '🔥' : index === 1 ? '🚀' : index === 2 ? '👑' : '💪'}`);
+                lines.push(`   Von ${formatNumber(player.previousTotal)} auf ${formatNumber(player.total)} Gesamtrohstoffe – ein Plus von ${formatNumber(player.diff)} Rohstoffen.${player.percent >= 20 ? ' Was für ein Sprung!' : ' Stark nachgelegt!'}`);
+                lines.push('');
             });
         } else {
-            lines.push('[i]Noch nicht verfügbar – die Steigerungen erscheinen ab dem nächsten gespeicherten Tagesstand.[/i]');
+            lines.push('Noch nicht verfügbar – die Steigerungen erscheinen ab dem nächsten gespeicherten Tagesstand.');
+            lines.push('');
+        }
+        lines.push('⸻');
+        lines.push('');
+        lines.push(`📊 [b]Durchschnittlicher Gesamtwert:[/b] [b]${formatNumber(currentAverage)}[/b] Rohstoffe`);
+        lines.push('');
+        if (previousAverage !== null) {
+            const averageDiff = currentAverage - previousAverage;
+            lines.push(`Beim Vergleichsstand vom ${previousDate} lagen wir bei ${formatNumber(previousAverage)} Rohstoffen pro Spieler – aktuell sind es ${formatNumber(currentAverage)}. Das sind ${signedNumber(averageDiff)} Rohstoffe pro Spieler. ${averageDiff > 0 ? 'Das kann sich sehen lassen! 🎉' : averageDiff === 0 ? 'Damit bleibt der Durchschnitt stabil.' : 'Da ist beim nächsten Stand wieder Luft nach oben. 💪'}`);
+        } else {
+            lines.push(`Mit ${ranked.length} ausgewerteten Spielern steht damit unser erster gespeicherter Durchschnitt. Beim nächsten Stand sehen wir sofort, wie stark wir gemeinsam zugelegt haben. 📈`);
+        }
+        if (leader && hasPrevious) {
+            lines.push('');
+            lines.push(`Absolut führt aktuell ${bbPlayer(leader.name)} mit ${formatNumber(leader.total)} Rohstoffen.${bestAbsolute ? ` Den größten absoluten Zuwachs liefert heute ${bbPlayer(bestAbsolute.name)} mit ${signedNumber(bestAbsolute.diff)} Rohstoffen.` : ''}`);
+        }
+        if (bestIncrease && hasPrevious) {
+            lines.push('');
+            lines.push(`Der prozentuale Tagessieg geht an ${bbPlayer(bestIncrease.name)}: [b]${formatPercent(bestIncrease.percent)}[/b] und ${formatNumber(bestIncrease.diff)} zusätzliche Rohstoffe. 🔥`);
         }
         lines.push('');
-        lines.push('[b]Durchschnitt pro Spieler[/b]');
-        lines.push(`Geplündert: [b]${formatNumber(sums.loot / count)}[/b] | Gesammelt: [b]${formatNumber(sums.gathered / count)}[/b] | Insgesamt: [b]${formatNumber(sums.total / count)}[/b]`);
+        lines.push('Glückwunsch an alle – weiter so! 💪😎');
         lines.push('');
-        lines.push('[b]Fazit[/b]');
-        if (leader && bestIncrease && hasPrevious) {
-            if (bestIncrease.name === leader.name) {
-                lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an und erzielt zugleich mit ${bbColor(diffColor(bestIncrease.diff, true), `[b]${formatPercent(bestIncrease.percent)}[/b]`)} die stärkste prozentuale Veränderung zum Vergleichsstand.`);
-            } else {
-                lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an. Die stärkste prozentuale Veränderung erreicht ${bbPlayer(bestIncrease.name)} mit ${bbColor(diffColor(bestIncrease.diff, true), `[b]${formatPercent(bestIncrease.percent)}[/b]`)}.`);
-            }
-        } else if (leader) {
-            lines.push(`${bbPlayer(leader.name)} führt die Tageswertung mit [b]${formatNumber(leader.total)}[/b] Rohstoffen an. Ab dem nächsten Tagesstand ergänzt die Auswertung automatisch die Veränderungen zum Vortag.`);
-        }
+        lines.push('[/i]');
         lines.push('');
-        lines.push('[b]Vollständige Rangliste[/b]');
         lines.push('[table]');
         lines.push(`[**]Rang[||]Spieler[||]Gesamt (${previous ? shortDate(previous.date) : '–'})[||]Gesamt (${shortDate(snapshot.date)})[||]Geplündert[||]Gesammelt[||]Veränderung %[/**]`);
         ranked.forEach((player, index) => {
@@ -411,6 +483,58 @@ javascript:
         helper.select();
         document.execCommand('copy');
         helper.remove();
+    }
+
+    function setFormValue(field, value) {
+        field.focus();
+        field.value = value;
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    async function openPreparedForumPost(threadUrl, title, bbcode) {
+        const parsed = new URL(threadUrl, location.href);
+        if (parsed.origin !== location.origin) throw new Error('Die URL gehört nicht zu dieser Spielwelt.');
+        const forumId = parsed.searchParams.get('forum_id');
+        if (!forumId) throw new Error('In der URL fehlt die forum_id. Bitte nutze einen Link aus dem gewünschten Unterforum.');
+
+        parsed.searchParams.set('screen', 'forum');
+        parsed.searchParams.set('screenmode', 'new_thread');
+        parsed.searchParams.set('forum_id', forumId);
+        parsed.searchParams.delete('thread_id');
+        parsed.searchParams.delete('page');
+
+        const popup = window.open(parsed.href, '_blank');
+        if (!popup) throw new Error('Das neue Fenster wurde vom Browser blockiert. Bitte Pop-ups für Die Stämme erlauben.');
+
+        const started = Date.now();
+        let followedFallback = false;
+        while (Date.now() - started < 20000) {
+            if (popup.closed) throw new Error('Das Forumfenster wurde geschlossen.');
+            try {
+                const doc = popup.document;
+                const message = doc.querySelector('textarea[name="message"], textarea[name="text"], textarea[name="post"], #message, #post_text, textarea');
+                const subject = doc.querySelector('input[name="subject"], input[name="title"], #subject, #title');
+                if (message && subject) {
+                    setFormValue(subject, title);
+                    setFormValue(message, bbcode);
+                    message.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    message.focus();
+                    return;
+                }
+                if (!followedFallback && doc.readyState === 'complete') {
+                    const link = doc.querySelector('a[href*="screenmode=new_thread"], a[href*="screenmode=newthread"], a[href*="screenmode=new_post"]');
+                    if (link?.href && link.href !== popup.location.href) {
+                        followedFallback = true;
+                        popup.location.href = link.href;
+                    }
+                }
+            } catch (error) {
+                // Während eines Seitenwechsels ist das Dokument kurz nicht zugreifbar.
+            }
+            await sleep(250);
+        }
+        throw new Error('Die Eingabefelder des neuen Forumsbeitrags wurden nicht gefunden. Bitte zeige mir die geöffnete Seite als Screenshot.');
     }
 
     const store = readStore();
@@ -452,7 +576,7 @@ javascript:
             <div class="ds-buttons">
                 <button type="button" class="btn" id="${APP_ID}-run">Daten lesen & Auswertung erstellen</button>
                 <button type="button" class="btn" id="${APP_ID}-copy" disabled>BB-Code kopieren</button>
-                <button type="button" class="btn" id="${APP_ID}-forum-open" disabled>Forum öffnen</button>
+                <button type="button" class="btn" id="${APP_ID}-forum-open" disabled>Post fertig öffnen</button>
                 <button type="button" class="btn" id="${APP_ID}-export" disabled>Rohdaten sichern</button>
                 <button type="button" class="btn" id="${APP_ID}-import-toggle">Alten Stand importieren</button>
             </div>
@@ -469,7 +593,7 @@ javascript:
             </div>
             <div class="ds-status" id="${APP_ID}-status">${existingToday ? `Für heute (${displayDate(today)}) ist bereits ein Stand gespeichert. Du kannst ihn neu einlesen und ersetzen.` : `Bereit für die Auswertung vom ${displayDate(today)}.`}${initialPrevious ? ` Vergleich: ${displayDate(initialPrevious.date)}.` : ' Noch kein älterer Vergleichsstand vorhanden.'}</div>
             <div class="ds-progress"><span id="${APP_ID}-bar"></span></div>
-            <p class="ds-note">Der Forumsbeitrag wird nur vorbereitet. Das Script sendet oder veröffentlicht nichts automatisch.</p>
+            <p class="ds-note">„Post fertig öffnen“ trägt Betreff und BB-Code in einen neuen Forumsbeitrag ein. Veröffentlicht wird erst, wenn du im Forum selbst auf Absenden klickst.</p>
             <textarea id="${APP_ID}-output" readonly placeholder="Hier erscheint nach dem Einlesen der vollständige BB-Code …"></textarea>
         </div>`;
 
@@ -608,13 +732,14 @@ javascript:
         const url = forumInput.value.trim();
         if (!url || !output.value) return;
         try {
-            const parsed = new URL(url, location.href);
-            if (parsed.origin !== location.origin) throw new Error('Die URL gehört nicht zu dieser Spielwelt.');
-            await copyText(output.value);
-            setStatus('BB-Code kopiert – das Forum wird geöffnet. Dort nur noch in den Editor einfügen und kontrollieren.', 'success');
-            window.open(parsed.href, '_blank', 'noopener');
+            forumButton.disabled = true;
+            setStatus('Der neue Forumsbeitrag wird geöffnet und ausgefüllt …');
+            await openPreparedForumPost(url, forumTitle(currentSnapshot?.date || today), output.value);
+            setStatus(`Forumsbeitrag „${forumTitle(currentSnapshot?.date || today)}“ ist vollständig vorbereitet. Bitte nur noch kontrollieren und absenden.`, 'success');
         } catch (error) {
-            setStatus(`Forum konnte nicht geöffnet werden: ${error.message || error}`, 'error');
+            setStatus(`Post konnte nicht vollständig vorbereitet werden: ${error.message || error}`, 'error');
+        } finally {
+            forumButton.disabled = !output.value || !forumInput.value.trim();
         }
     });
 
