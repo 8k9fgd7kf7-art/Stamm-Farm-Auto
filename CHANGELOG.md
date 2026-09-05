@@ -1,5 +1,16 @@
 # Änderungsverlauf
 
+## 1.3.0 – 05.09.2026
+
+- Ausführliche, freundliche Auswertungstexte mit passenden Symbolen ergänzt.
+- Individuelle Kommentare für die Top 5 nach Gesamtleistung.
+- Ausführliche Top-5-Texte zu prozentualen und absoluten Steigerungen.
+- Durchschnittsvergleich und dynamisches Tagesfazit erweitert.
+- Neuer Button `Post fertig öffnen`.
+- Neuer Forumsbeitrag wird mit Betreff und BB-Code vorausgefüllt.
+- Betreff wird automatisch als `📈Tägliche Auswertung TT.MM.JJJJ` erzeugt.
+- Der Beitrag wird weiterhin niemals automatisch abgesendet.
+
 ## 1.2.0 – 05.09.2026
 
 - Ranglistentabelle an das bisherige Forumsformat angepasst.
