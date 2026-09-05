@@ -10,6 +10,7 @@ Ein Browser-Script für **Die Stämme**, das die täglichen Farm- und Sammeldate
 - Speichert Tagesstände getrennt nach Welt und Stamm im Browser.
 - Importiert ältere Tagesstände aus bisherigen BB-Code-Tabellen.
 - Vergleicht den aktuellen Stand mit dem zuletzt gespeicherten älteren Tagesstand.
+- Sortiert die höchsten Steigerungen prozentual.
 - Erstellt:
   - Top 5 nach Gesamtleistung
   - Top 5 nach höchster Steigerung
@@ -69,7 +70,7 @@ Die Historie umfasst maximal 120 Tagesstände je Welt und Stamm. Über **Rohdate
 
 ## Version
 
-Aktuell: **1.1.0**
+Aktuell: **1.2.0**
 
 Details stehen in der [`CHANGELOG.md`](CHANGELOG.md).
 
